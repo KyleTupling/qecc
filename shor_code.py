@@ -2,14 +2,16 @@ import random
 import numpy as np 
 import copy
 import time
+import matplotlib.pyplot as plt
 np.set_printoptions(threshold=np.inf) # Allow for printing of full matrices etc
 
 DEBUG_MODE = False
-CYCLES = 5000
+CYCLES = 50
 
 # Define Pauli matrices
 X = np.array([[0, 1], [1, 0]])
 Z = np.array([[1, 0], [0, -1]])
+Y = np.array([[0, -1j], [1j, 0]])
 I = np.eye(2)
 
 zeroQubit = np.matrix([[1], [0]])
@@ -54,8 +56,7 @@ class ShorState(object):
         self.blockSignsMat = _blockSignsMat
 
         # Keep track of errors induced
-        self.bitFlipCount = 0
-        self.phaseFlipCount = 0
+        self.totalErrorCount = 0
 
         # Encode
         self.statevector = self.encode()
@@ -65,15 +66,32 @@ class ShorState(object):
         returnStr = ""
         for i, block in enumerate(self.blockLayoutMat):
             returnStr += "("
+            returnStr += f" {self.blockSignsMat[i][0]} " if self.blockSignsMat[i][0] == "-" else ""
             for j, subblock in enumerate(block):
                 returnStr += "|"
                 for k, value in enumerate(subblock):
                     returnStr += str(value)
                 returnStr += ">"
-                returnStr += f" {self.blockSignsMat[i][0]} " if j % 2 == 0 else ""
+                returnStr += f" {self.blockSignsMat[i][1]} " if j % 2 == 0 else ""
             returnStr += ") x " if i < 2 else ") "
                     
         return returnStr
+    
+    @staticmethod
+    def StateBlockDifference(_state1, _state2):
+        differenceCount = 0
+        for i, block in enumerate(_state1.blockLayoutMat):
+            for j, subblock in enumerate(block):
+                for k, value in enumerate(subblock):
+                    if value != _state2.blockLayoutMat[i][j][k]:
+                        differenceCount += 1
+        
+        for i, block in enumerate(_state1.blockSignsMat):
+            for j, value in enumerate(block):
+                if value != _state2.blockSignsMat[i][j]:
+                    differenceCount += 1
+
+        return differenceCount
 
     def encode(self):
         blockLayout = copy.deepcopy(self.blockLayoutMat)
@@ -94,60 +112,65 @@ class ShorState(object):
 
         blockSignsMat = copy.deepcopy(self.blockSignsMat)
 
-        # Assign signs to encoding
-        if blockSignsMat[0][0] == "+":
-            firstBlock = np.kron(np.kron(firstBlockLayout[0][0], firstBlockLayout[0][1]), firstBlockLayout[0][2]) + np.kron(np.kron(firstBlockLayout[1][0], firstBlockLayout[1][1]), firstBlockLayout[1][2])
-        else:
-            firstBlock = np.kron(np.kron(firstBlockLayout[0][0], firstBlockLayout[0][1]), firstBlockLayout[0][2]) - np.kron(np.kron(firstBlockLayout[1][0], firstBlockLayout[1][1]), firstBlockLayout[1][2])
-        
-        if blockSignsMat[1][0] == "+":
-            secondBlock = np.kron(np.kron(secondBlockLayout[0][0], secondBlockLayout[0][1]), secondBlockLayout[0][2]) + np.kron(np.kron(secondBlockLayout[1][0], secondBlockLayout[1][1]), secondBlockLayout[1][2])
-        else:
-            secondBlock = np.kron(np.kron(secondBlockLayout[0][0], secondBlockLayout[0][1]), secondBlockLayout[0][2]) - np.kron(np.kron(secondBlockLayout[1][0], secondBlockLayout[1][1]), secondBlockLayout[1][2])
-        
-        if blockSignsMat[2][0] == "+":
-            thirdBlock = np.kron(np.kron(thirdBlockLayout[0][0], thirdBlockLayout[0][1]), thirdBlockLayout[0][2]) + np.kron(np.kron(thirdBlockLayout[1][0], thirdBlockLayout[1][1]), thirdBlockLayout[1][2])
-        else:
-            thirdBlock = np.kron(np.kron(thirdBlockLayout[0][0], thirdBlockLayout[0][1]), thirdBlockLayout[0][2]) - np.kron(np.kron(thirdBlockLayout[1][0], thirdBlockLayout[1][1]), thirdBlockLayout[1][2])
+        encodedBlockLayouts = []
+        for i in range(len(blockSignsMat)):
+            currentBlock = blockLayout[i]
 
-        return np.kron(firstBlock, np.kron(secondBlock, thirdBlock))
+            if blockSignsMat[i][0] == "+" and blockSignsMat[i][1] == "+":
+                encodedBlock = np.kron(np.kron(currentBlock[0][0], currentBlock[0][1]), currentBlock[0][2]) + np.kron(np.kron(currentBlock[1][0], currentBlock[1][1]), currentBlock[1][2])
+            elif blockSignsMat[i][0] == "+" and blockSignsMat[i][1] == "-":
+                encodedBlock = np.kron(np.kron(currentBlock[0][0], currentBlock[0][1]), currentBlock[0][2]) - np.kron(np.kron(currentBlock[1][0], currentBlock[1][1]), currentBlock[1][2])
+            elif blockSignsMat[i][0] == "-" and blockSignsMat[i][1] == "+":
+                encodedBlock = np.kron(-1 * np.kron(currentBlock[0][0], currentBlock[0][1]), currentBlock[0][2]) + np.kron(np.kron(currentBlock[1][0], currentBlock[1][1]), currentBlock[1][2])
+            else:
+                encodedBlock = np.kron(-1 * np.kron(currentBlock[0][0], currentBlock[0][1]), currentBlock[0][2]) - np.kron(np.kron(currentBlock[1][0], currentBlock[1][1]), currentBlock[1][2])
+
+            encodedBlockLayouts.append(encodedBlock)
+
+        return np.kron(encodedBlockLayouts[0], np.kron(encodedBlockLayouts[1], encodedBlockLayouts[2]))
     
     # REFACTOR: NEEDS TO BE EITHER BIT FLIP, PHASE FLIP, BOTH, OR NONE
     def errorChannel(self, p):
+        channelErrorCount = 0
+
         blockLayout = copy.deepcopy(self.blockLayoutMat)
         blockSignsMat = copy.deepcopy(self.blockSignsMat)
 
         if DEBUG_MODE: print("-- ERROR CHANNEL --------------------")
 
-        #Bit-flipper
         for i, block in enumerate(blockLayout):
             for j in range(3):
-                if random.random() <= p:
-                    self.bitFlipCount += 1 # Increase instance bit flip count by 1
-                    if DEBUG_MODE: print(f"Bits at block {i+1}, index {j+1} flipping")
+                # Bit-flip
+                if random.random() <= p/3:
+                    if DEBUG_MODE: print(f"Bits at block {i+1}, index {j + 1} flipping")
                     block[0][j] ^= 1
                     block[1][j] ^= 1
-                elif random.random() <= p:
-                    self.phaseFlipCount += 1
+                    channelErrorCount += 1
+                # Phase-flip
+                elif random.random() <= p/3: 
                     if DEBUG_MODE: print(f"Phase flipping at block {i + 1}")
                     if block[1][j] == 1:
-                        blockSignsMat[i][0] = "-" if blockSignsMat[i][0] == "+" else "+"
+                        blockSignsMat[i][1] = "-" if blockSignsMat[i][1] == "+" else "+"
+                    channelErrorCount += 1
+                # Bit and phase flip
+                elif random.random() <= p/3:
+                    if DEBUG_MODE: print(f"Bit & Phase flipping at block {i + 1}, index {j + 1}")
+                    block[0][j] ^= 1
+                    block[1][j] ^= 1
+                    blockSignsMat[i][1] = "-" if blockSignsMat[i][1] == "+" else "+"
+                    channelErrorCount += 1
                     
-
-        # for i, block in enumerate(blockSignsMat):
-        #     if random.random() <= p:
-        #         self.phaseFlipCount += 1 # Increase instance phase flip count by 1
-        #         print(f"Phase flipping at block {i + 1}")
-        #         if block[0] == "+":
-        #             block[0] = "-"
-        #         else:
-        #             block[0] == "+"
         if DEBUG_MODE: print("-------------------------------------")
         
-        return ShorState(blockLayout, blockSignsMat)
+        erroredState = ShorState(blockLayout, blockSignsMat)
+        erroredState.totalErrorCount = channelErrorCount
+        return erroredState
 
     def errorCorrection(self):
         sv = self.statevector
+
+        # self.statevector = self.encode()
+        # sv = self.statevector
 
         Z1Z2_eigenvalue = computeEigenvalue(Z1 @ Z2, sv)
         Z2Z3_eigenvalue = computeEigenvalue(Z2 @ Z3, sv)
@@ -199,12 +222,26 @@ class ShorState(object):
         PHASE2_eigenvalue = computeEigenvalue(X4 @ X5 @ X6 @ X7 @ X8 @ X9, sv)
 
         if PHASE1_eigenvalue == -1 and PHASE2_eigenvalue == 1:
-            self.blockSignsMat[0][0] = "+" if self.blockSignsMat[0][0] == "-" else "-"
+            self.blockSignsMat[0][1] = "+" if self.blockSignsMat[0][1] == "-" else "-"
         elif PHASE1_eigenvalue == -1 and PHASE2_eigenvalue == -1:
-            self.blockSignsMat[1][0] = "+" if self.blockSignsMat[1][0] == "-" else "-"
+            self.blockSignsMat[1][1] = "+" if self.blockSignsMat[1][1] == "-" else "-"
         elif PHASE1_eigenvalue == 1 and PHASE2_eigenvalue == -1:
-            self.blockSignsMat[2][0] = "+" if self.blockSignsMat[2][0] == "-" else "-"
-        
+            self.blockSignsMat[2][1] = "+" if self.blockSignsMat[2][1] == "-" else "-"
+
+        if DEBUG_MODE:
+            print(f"Z1 Z2 |psi> eigenvalue: {Z1Z2_eigenvalue}")
+            print(f"Z2 Z3 |psi> eigenvalue: {Z2Z3_eigenvalue}")
+            print("-------------------------------")
+            print(f"Z4 Z5 |psi> eigenvalue: {Z4Z5_eigenvalue}")
+            print(f"Z5 Z6 |psi> eigenvalue: {Z5Z6_eigenvalue}")
+            print("-------------------------------")
+            print(f"Z7 Z8 |psi> eigenvalue: {Z7Z8_eigenvalue}")
+            print(f"Z8 Z9 |psi> eigenvalue: {Z8Z9_eigenvalue}")
+            print("-------------------------------")
+            print(f"X1 X2 X3 X4 X5 X6 |psi> eigenvalue: {PHASE1_eigenvalue}")
+            print(f"X4 X5 X6 X7 X8 X9 |psi> eigenvalue: {PHASE2_eigenvalue}")
+            print("-------------------------------")
+
         self.statevector = self.encode()
 
 def computeEigenvalue(_gate, _stateVector):
@@ -225,26 +262,13 @@ def computeEigenvalue(_gate, _stateVector):
     innerProduct = np.dot(_stateVector.conj().T, resultVector)
     
     # Compute the magnitude of the inner product
-    magnitude = np.abs(innerProduct)
-    
+    #magnitude = np.abs(innerProduct)
+    magnitude = np.dot(_stateVector.conj().T, _stateVector)
+
     # Compute the eigenvalue
     eigenvalue = innerProduct / magnitude
     
     return eigenvalue
-
-# MAY NOT BE NEEDED
-def baseBlockDifference(_block1, _block2):
-    if len(_block1) != len(_block2):
-        raise ValueError("Blocks must be the same length")
-    
-    differenceCount = 0
-    for i, block in enumerate(_block1):
-            for j, subblock in enumerate(block):
-                for k, value in enumerate(subblock):
-                    if value != _block2[i][j][k]:
-                        differenceCount += 1
-
-    return differenceCount
 
 # NEED TO ADD FUNCTIONALITY FOR PHASE FLIP NOTATION WITHIN BLOCK VIEW
 baseBlock = [
@@ -256,86 +280,51 @@ baseBlock = [
 # Use signs matrix?
 # - Could use this to allow for phase flipping and for encoding the |1> state
 baseBlockSigns = [
-    ["+"],
-    ["+"],
-    ["+"]
+    ["+", "+"],
+    ["+", "+"],
+    ["+", "+"]
 ]
 
 #sv = shorStatevector(baseBlock)
 
-state = ShorState(baseBlock, baseBlockSigns) # Working
-errorState = state.errorChannel(0.2)
-sv = errorState.statevector
-print(f"Initial state: {state}")
-print(f"Error state: {errorState}")
-errorState.errorCorrection()
-print(f"Corrected state: {errorState}")
-if DEBUG_MODE:
-    print("-- STATES ---------------------------")
-    print(f"Initial state: {state}")
-    print(f"Errored state: {errorState}")
-    print("-------------------------------------")
+# state = ShorState(baseBlock, baseBlockSigns) # Working
+# errorState = state.errorChannel(0.15)
+# sv = errorState.statevector
+
+# print(f"Initial state: {state}")
+# print(f"Error state: {errorState}")
+# errorState.errorCorrection()
+# print(f"Corrected state: {errorState}")
 
 # No Qubit Flip = (+1, +1)
 # 1st Qubit Flip = (-1, +1)
 # 2nd Qubit Flip = (-1, -1)
 # 3rd Qubit Flip = (+1, -1)
 
-Z1Z2_eigenvalue = computeEigenvalue(Z1 @ Z2, sv)
-Z2Z3_eigenvalue = computeEigenvalue(Z2 @ Z3, sv)
-Z4Z5_eigenvalue = computeEigenvalue(Z4 @ Z5, sv)
-Z5Z6_eigenvalue = computeEigenvalue(Z5 @ Z6, sv)
-Z7Z8_eigenvalue = computeEigenvalue(Z7 @ Z8, sv)
-Z8Z9_eigenvalue = computeEigenvalue(Z8 @ Z9, sv)
-
-if DEBUG_MODE:
-    # Bit flip error detection
-    print(f"Z1 Z2 |psi> eigenvalue: {Z1Z2_eigenvalue}")
-    print(f"Z2 Z3 |psi> eigenvalue: {Z2Z3_eigenvalue}")
-    print("-------------------------------")
-    print(f"Z4 Z5 |psi> eigenvalue: {Z4Z5_eigenvalue}")
-    print(f"Z5 Z6 |psi> eigenvalue: {Z5Z6_eigenvalue}")
-    print("-------------------------------")
-    print(f"Z7 Z8 |psi> eigenvalue: {Z7Z8_eigenvalue}")
-    print(f"Z8 Z9 |psi> eigenvalue: {Z8Z9_eigenvalue}")
-    print("-------------------------------")
-    print(f"X1 X2 X3 X4 X5 X6 |psi> eigenvalue: {computeEigenvalue(X1 @ X2 @ X3 @ X4 @ X5 @ X6, sv)}")
-    print(f"X4 X5 X6 X7 X8 X9 |psi> eigenvalue: {computeEigenvalue(X4 @ X5 @ X6 @ X7 @ X8 @ X9, sv)}")
-    print("-------------------------------")
-
-if DEBUG_MODE:
-    # Detect bitflips
-    if Z1Z2_eigenvalue == -1 and Z2Z3_eigenvalue == 1:
-        print("Bit flip detected on 1st block bit 1")
-    elif Z1Z2_eigenvalue == -1 and Z2Z3_eigenvalue == -1:
-        print("Bit flip detected on 1st block bit 2")
-    elif Z1Z2_eigenvalue == 1 and Z2Z3_eigenvalue == -1:
-        print("Bit flip detected on 1st block bit 3")
-
-    if Z4Z5_eigenvalue == -1 and Z5Z6_eigenvalue == 1:
-        print("Bit flip detected on 2nd block bit 1")
-    elif Z4Z5_eigenvalue == -1 and Z5Z6_eigenvalue == -1:
-        print("Bit flip detected on 2nd block bit 2")
-    elif Z4Z5_eigenvalue == 1 and Z5Z6_eigenvalue == -1:
-        print("Bit flip detected on 2nd block bit 3")
-
-    if Z7Z8_eigenvalue == -1 and Z8Z9_eigenvalue == 1:
-        print("Bit flip detected on 3rd block bit 1")
-    elif Z7Z8_eigenvalue == -1 and Z8Z9_eigenvalue == -1:
-        print("Bit flip detected on 3rd block bit 2")
-    elif Z7Z8_eigenvalue == 1 and Z8Z9_eigenvalue == -1:
-        print("Bit flip detected on 3rd block bit 3")
+# if ShorState.StateBlockDifference(state, errorState):
+#     print("ERRORS NOT FIXED")
 
 initTime = time.time()
-totalErrors = 0
-for i in range(CYCLES):
-    differenceCount = 0
-    state = ShorState(baseBlock, baseBlockSigns) # Working
-    errorState = state.errorChannel(0.2)
-    errorState.errorCorrection()
-    if not np.all(state.statevector == errorState.statevector):
-        totalErrors += 1
+probabilityList = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1]
+probabilityList = np.arange(0.01, 0.25, 0.01)
+errorList = []
+for i in range(len(probabilityList)):
+    totalErrors = 0
+    for j in range(CYCLES):
+        differenceCount = 0
+        state = ShorState(baseBlock, baseBlockSigns) # Working
+        errorState = state.errorChannel(probabilityList[i])
+        errorState.errorCorrection()
+        if not np.all(state.statevector == errorState.statevector):
+            #totalErrors += ShorState.StateBlockDifference(state, errorState)
+            totalErrors += ShorState.StateBlockDifference(state, errorState)
+    errorList.append(totalErrors)
+    print(f"Error probability: {probabilityList[i]}")
+    print(f"Total errors after {CYCLES} cycles: {totalErrors}")
+    print(f"Error rate: {totalErrors / (CYCLES)}")
+    print("-----------------------------")
 
-print(f"Total errors after {CYCLES} cycles: {totalErrors}")
-print(f"Error rate: {totalErrors / (CYCLES)}")
-print(f"Time taken: {time.time() - initTime}")
+print(f"Time taken: {round(time.time() - initTime, 2)}s")
+
+plt.plot(probabilityList, [i / (9 * CYCLES) for i in errorList])
+plt.show()
