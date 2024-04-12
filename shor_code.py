@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 np.set_printoptions(threshold=np.inf) # Allow for printing of full matrices etc
 
 DEBUG_MODE = False
-CYCLES = 50
+CYCLES = 1000
 
 # Define Pauli matrices
 X = np.array([[0, 1], [1, 0]])
@@ -82,9 +82,12 @@ class ShorState(object):
         differenceCount = 0
         for i, block in enumerate(_state1.blockLayoutMat):
             for j, subblock in enumerate(block):
+                if block[0][j] != _state2.blockLayoutMat[i][0][j]:
+                    differenceCount += 1
                 for k, value in enumerate(subblock):
-                    if value != _state2.blockLayoutMat[i][j][k]:
-                        differenceCount += 1
+                    # if value != _state2.blockLayoutMat[i][j][k]:
+                    #     differenceCount += 1
+                    pass
         
         for i, block in enumerate(_state1.blockSignsMat):
             for j, value in enumerate(block):
@@ -301,12 +304,9 @@ baseBlockSigns = [
 # 2nd Qubit Flip = (-1, -1)
 # 3rd Qubit Flip = (+1, -1)
 
-# if ShorState.StateBlockDifference(state, errorState):
-#     print("ERRORS NOT FIXED")
-
 initTime = time.time()
 probabilityList = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1]
-probabilityList = np.arange(0.01, 0.25, 0.01)
+probabilityList = np.arange(0, 0.25, 0.005)
 errorList = []
 for i in range(len(probabilityList)):
     totalErrors = 0
@@ -316,7 +316,6 @@ for i in range(len(probabilityList)):
         errorState = state.errorChannel(probabilityList[i])
         errorState.errorCorrection()
         if not np.all(state.statevector == errorState.statevector):
-            #totalErrors += ShorState.StateBlockDifference(state, errorState)
             totalErrors += ShorState.StateBlockDifference(state, errorState)
     errorList.append(totalErrors)
     print(f"Error probability: {probabilityList[i]}")
@@ -326,5 +325,44 @@ for i in range(len(probabilityList)):
 
 print(f"Time taken: {round(time.time() - initTime, 2)}s")
 
-plt.plot(probabilityList, [i / (9 * CYCLES) for i in errorList])
+theoreticalModel = []
+for i, prob in enumerate(probabilityList):
+    theoreticalModel.append(1 - ((1-prob) ** 9) - 9 * prob * ((1 - prob) ** 8))
+
+x = np.linspace(probabilityList[0], probabilityList[-1], 50)
+theoreticalX = np.linspace(0, probabilityList[-1], 100)
+
+noCodingModel = []
+for i, prob in enumerate(probabilityList):
+    noCodingModel.append(9 * prob)
+
+#z = np.polyfit(probabilityList, np.log(noCodingModel), 3)
+#f = np.poly1d(z)
+y = 1 - (1-theoreticalX) ** 9
+noCodingPlot = plt.plot(theoreticalX, y, linestyle="dashed", color="red", label="No Encoding")
+#noCodingPlot = plt.plot(probabilityList, noCodingModel, 'x',x, y, linestyle='dashed', color="red")
+
+z = np.polyfit(probabilityList, np.log(theoreticalModel), 3)
+f = np.poly1d(z)
+#y = f(x)
+y = 1 - ((1-theoreticalX) ** 9) - 9 * theoreticalX * ((1 - theoreticalX) ** 8)
+ 
+theoreticalPlot = plt.plot(theoreticalX, y, linestyle='dashed', color="black", label="Theoretical")
+#theoreticalPlot = plt.plot(probabilityList, theoreticalModel, 'x',x, y, linestyle='dashed', color="black")
+
+z = np.polyfit(probabilityList, [i / (CYCLES) for i in errorList], 3)
+f = np.poly1d(z)
+y = f(x)
+
+plt.yscale("log")
+dataPlot = plt.plot(probabilityList, [i / (CYCLES) for i in errorList], 'x', color="blue") 
+dataCurvePlot = plt.plot(x, y, color="blue", label="Simulation")
+
+#plt.xlim(0, 0.3)
+
+plt.title("Shor Code Depolarising Probability vs. QBER")
+plt.xlabel("Depolarising Probability")
+plt.ylabel("QBER")
+plt.legend(loc="upper left")
+
 plt.show()
