@@ -1,17 +1,40 @@
 import time
 import random
+import copy
 import numpy as np 
 import matplotlib.pyplot as plt
+import csv
+
+import matplotlib 
+
+font = {'family' : 'serif',
+         'size'   : 12,
+         'serif':  'cmr10'
+         }
+
+matplotlib.rc('font', **font)
 
 CYCLES = 1000
 
 # Define Pauli matrices
 X = np.array([[0, 1], [1, 0]])
 Z = np.array([[1, 0], [0, -1]])
-Y = np.array([[0, -1j], [1j, 0]])
+Y = np.array([[0, -1], [1, 0]])
 I = np.eye(2)
 
+# Scales an operator for an n-qubit system
 def scaleOperator(_operator, _n, _pos):
+    """Scales an operator for an n-qubit system
+
+    Args:
+        _operator (array): operator matrix for a single-qubit system
+        _n (int): number of qubits to scale for
+        _pos (int): which qubit the operator acts on in the n-qubit system
+    
+    Returns:
+        array: scaled operator matrix
+
+    """
     if _pos == 1:
         newOperator = _operator
         for i in range(_n-1):
@@ -32,11 +55,16 @@ class Qubit(object):
         self.y = _y
 
         self.data = 0
+        self.positive = True
         self.vector = np.matrix([[1], [0]])
 
         self.surfaceNumber = None
         self.localXStabilisers = []
         self.localZStabilisers = []
+
+    @staticmethod
+    def EqualStatevectors(_qubit1, _qubit2):
+        return _qubit1.vector[0] == _qubit2.vector[0] and _qubit1.vector[1] == _qubit2.vector[1]
 
     def setValue(self, _value):
         if _value != 0 and _value != 1:
@@ -48,47 +76,27 @@ class Qubit(object):
         elif _value == 1:
             self.vector = np.matrix([[0], [1]])
 
+    def flipSign(self):
+        self.positive = not self.positive
+        self.vector *= -1
+
     def bitFlip(self):
         self.data ^= 1
+        self.vector = X @ self.vector
 
-# Takes a pattern array
-# Currently only modelled to handle n, n - 1, n, n -1, etc. where n is odd > 1
-class QubitSurface(object):
+    def phaseFlip(self):
+        if self.data != 0:
+            #self.data == -self.data
+            self.positive = not self.positive
+            self.vector = Z @ self.vector
 
-    def __init__(self, _patternArray):
-        self.grid = []
-        self.qubitCount = 0
-
-        for x in range(len(_patternArray)):
-            row = []
-            for y in range(_patternArray[x]):
-                qubit = Qubit(x, y)
-                row.append(qubit)
-                self.qubitCount += 1
-                qubit.surfaceNumber = self.qubitCount
-            self.grid.append(row)
-
-        self.xStabilisers = []
-        for i in range(self.qubitCount):
-            self.xStabilisers.append(scaleOperator(X, self.qubitCount, i + 1))
-
-        self.zStabilisers = []
-        for i in range(self.qubitCount):
-            self.zStabilisers.append(scaleOperator(Z, self.qubitCount, i + 1))
-
-        for i in range(len(self.grid)):
-            for j in range(self.grid[i]):
-                if j != len(self.grid[i]) - 1:
-                    pass
-
-
-    def __str__(self):
-        returnStr = ""
-        for x in range(len(self.grid)):
-            for y in range(len(self.grid[x])):
-                returnStr += "q "
-            returnStr += "\n"
-        return returnStr
+    def bitAndPhaseFlip(self):
+        if self.data == 0:
+            self.data = 1
+        elif abs(self.data) == 1:
+            self.data = 0
+            self.positive = not self.positive
+        self.vector = Y @ self.vector
     
 class QubitSurface(object):
 
@@ -137,12 +145,49 @@ class QubitSurface(object):
                             # Craft appropriate stabilisers and insert into grid positions ready for measurements
                             stabiliserNumberList.append(neighbours[k].surfaceNumber)
                     self.zStabilisers.append(stabiliserNumberList)
+    
+    # This comparison function will only work if the grid was initialised with the same value for every data qubit
+    def surfaceQubitErrorCount(self, _globalInitialValue):
+        totalErrors = 0
+        for i in range(len(self.qubitReferences)):
+            if self.qubitReferences[i].data != _globalInitialValue:
+                totalErrors += 1
+            
+            if not self.qubitReferences[i].positive:
+                totalErrors += 1
 
-    def errorChannel(self, _p):
+        return totalErrors
+    
+    # Returns the majority check qubit data and sign
+    def qubitMajorityCheck(self):
+        majorityData = 0
+        majorityPositive = True
+
+        totalZeros = 0
+        totalPositive = 0
 
         for i in range(len(self.qubitReferences)):
-            if random.random() <= _p/3:
+            if self.qubitReferences[i].data == 0:
+                totalZeros += 1
+            if self.qubitReferences[i].positive:
+                totalPositive += 1
+
+        if totalZeros < len(self.qubitReferences) / 2:
+            majorityData = 1
+        if totalPositive < len(self.qubitReferences) / 2:
+            majorityPositive = False
+
+        return majorityData, majorityPositive
+
+    def errorChannel(self, _p):
+        for i in range(len(self.qubitReferences)):
+            if random.random() <= _p/3: # Bit-flip
                 self.qubitReferences[i].bitFlip()
+            elif random.random() <= _p/3:   # Phase-flip
+                self.qubitReferences[i].phaseFlip()
+            # TODO: Fix B+P errors
+            elif random.random() <= _p/3: # Bit and phase-flip
+                self.qubitReferences[i].bitAndPhaseFlip()
 
     # TODO: Collect syndrome table for bit-flips errors and phase-flip errors
     def getErrorSyndromes(self):
@@ -158,7 +203,8 @@ class QubitSurface(object):
         for stabiliserList in self.xStabilisers:
             eigenvalue = 1
             for stabiliserNumber in stabiliserList:
-                if self.qubitReferences[stabiliserNumber - 1].data == -1:
+                # if self.qubitReferences[stabiliserNumber - 1].data == -1:
+                if not self.qubitReferences[stabiliserNumber - 1].positive:
                     eigenvalue *= -1
             xSyndrome.append(0 if eigenvalue == 1 else 1)
 
@@ -169,6 +215,34 @@ class QubitSurface(object):
 
     # TODO: Make this scale with any size surface (find relation between syndrome vector and position on grid?)
     def errorCorrection(self, _xSyndrome, _zSyndrome):
+
+        # Correct single phase-flip errors
+        if _xSyndrome == [1, 0, 0, 0, 0, 0]:
+            self.qubitReferences[0].flipSign()
+        elif _xSyndrome == [0, 1, 0, 0, 0, 0]:
+            self.qubitReferences[1].flipSign()
+        elif _xSyndrome == [0, 0, 1, 0, 0, 0]:
+            self.qubitReferences[2].flipSign()
+        elif _xSyndrome == [1, 1, 0, 0, 0, 0]:
+            self.qubitReferences[3].flipSign()
+        elif _xSyndrome == [0, 1, 1, 0, 0, 0]:
+            self.qubitReferences[4].flipSign()
+        elif _xSyndrome == [1, 0, 0, 1, 0, 0]:
+            self.qubitReferences[5].flipSign()
+        elif _xSyndrome == [0, 1, 0, 0, 1, 0]:
+            self.qubitReferences[6].flipSign()
+        elif _xSyndrome == [0, 0, 1, 0, 0, 1]:
+            self.qubitReferences[7].flipSign()
+        elif _xSyndrome == [0, 0, 0, 1, 1, 0]:
+            self.qubitReferences[8].flipSign()
+        elif _xSyndrome == [0, 0, 0, 0, 1, 1]:
+            self.qubitReferences[9].flipSign()
+        elif _xSyndrome == [0, 0, 0, 1, 0, 0]:
+            self.qubitReferences[10].flipSign()
+        elif _xSyndrome == [0, 0, 0, 0, 1, 0]:
+            self.qubitReferences[11].flipSign()
+        elif _xSyndrome == [0, 0, 0, 0, 0, 1]:
+            self.qubitReferences[12].flipSign()
 
         # Correct single bit-flip errors
         if _zSyndrome == [1, 0, 0, 0, 0, 0]:
@@ -197,25 +271,6 @@ class QubitSurface(object):
             self.qubitReferences[11].bitFlip()
         elif _zSyndrome == [0, 0, 0, 0, 0, 1]:
             self.qubitReferences[12].bitFlip()
-        # Handle two bit-flip errors
-        # else:
-        #     stabiliserNums = []
-        #     for index, value in enumerate(_zSyndrome):
-        #         if value == 1: stabiliserNums.append(index)
-        #     stabiliserCoordinates = []
-        #     # Get coordinates of non-zero stabilisers on surface
-        #     for value in stabiliserNums:
-        #         stabiliserCoordinates.append(self.getSurfaceCoordinates("z", value + 1))
-        #     stabiliserNeighbours = []
-        #     # Get neighbouring data qubits of each stabiliser
-        #     for row, col in stabiliserCoordinates:
-        #         qubitNeighbours = []
-        #         neighbours = self.getNeighbours(row, col)
-        #         for neighbour in neighbours:
-        #             if isinstance(neighbour, Qubit):
-        #                 qubitNeighbours.append(neighbour)
-        #         stabiliserNeighbours.append(qubitNeighbours)
-        #     print(stabiliserNeighbours)
 
     def getSurfaceCoordinates(self, _strType, _occurNum):
         occurrenceCount = 0
@@ -248,6 +303,13 @@ class QubitSurface(object):
                 returnStr += f"{self.surfaceLayout[i][j]} "
             returnStr += "\n"
         return returnStr
+    
+    def qubitValuesStr(self):
+        returnStr = ""
+        for qubit in self.qubitReferences:
+            returnStr += "+" if qubit.positive else "-"
+            returnStr += f"{qubit.data} "
+        return returnStr
 
 gridLayout = [
     ["q", "x", "q", "x", "q"],
@@ -258,11 +320,15 @@ gridLayout = [
 ]
 
 surface = QubitSurface(gridLayout)
-surface.qubitReferences[1].data = 1
-surface.qubitReferences[6].data = 1
+surface.qubitReferences[0].bitAndPhaseFlip()
+surface.qubitReferences[0].phaseFlip()
 print([qubit.data for qubit in surface.qubitReferences])
+print([qubit.positive for qubit in surface.qubitReferences])
 xSyndrome, zSyndrome = surface.getErrorSyndromes()
+print(f"X Syndrome: {xSyndrome}")
+print(f"Z Syndrome: {zSyndrome}")
 surface.errorCorrection(xSyndrome, zSyndrome)
+print([qubit.positive for qubit in surface.qubitReferences])
 print([qubit.data for qubit in surface.qubitReferences])
 
 initTime = time.time()
@@ -272,14 +338,15 @@ for i in range(len(probabilityList)):
     totalErrors = 0
     for j in range(CYCLES):
         surface = QubitSurface(gridLayout)
-        initialQubitData = [qubit.data for qubit in surface.qubitReferences]
+        initialQubitData = [copy.deepcopy(qubit) for qubit in surface.qubitReferences]
+        initialQubitSigns = [qubit.positive for qubit in surface.qubitReferences]
         surface.errorChannel(probabilityList[i])
         xSyndrome, zSyndrome = surface.getErrorSyndromes()
         surface.errorCorrection(xSyndrome, zSyndrome)
-        finalQubitData = [qubit.data for qubit in surface.qubitReferences]
-        if not np.all(initialQubitData == finalQubitData):
-            for k in range(len(initialQubitData)):
-                if initialQubitData[k] != finalQubitData[k]: totalErrors += 1
+        finalQubitData = [qubit for qubit in surface.qubitReferences]
+        finalQubitSigns = [qubit.positive for qubit in surface.qubitReferences]
+        if surface.surfaceQubitErrorCount(0) >= 2:
+            totalErrors += 1
     errorList.append(totalErrors)
     print(f"Error probability: {probabilityList[i]}")
     print(f"Total errors after {CYCLES} cycles: {totalErrors}")
@@ -288,19 +355,22 @@ for i in range(len(probabilityList)):
 
 print(f"Time taken: {round(time.time() - initTime, 2)}s")
 
+with open('data/surface_code.csv', 'w') as dataFile:
+    writer = csv.writer(dataFile, delimiter=",")
+    writer.writerow([error / CYCLES for error in errorList])
+
 theoreticalModel = []
 for i, prob in enumerate(probabilityList):
     theoreticalModel.append(1 - ((1-prob) ** 13) - 13 * prob * ((1 - prob) ** 12))
 
-x = np.linspace(probabilityList[0], probabilityList[-1], 50)
+x = np.linspace(probabilityList[0], probabilityList[-1], 100)
 theoreticalX = np.linspace(0, probabilityList[-1], 100)
 
 z = np.polyfit(probabilityList, np.log(theoreticalModel), 3)
 f = np.poly1d(z)
-#y = f(x)
-y = 1 - ((1-theoreticalX) ** 9) - 9 * theoreticalX * ((1 - theoreticalX) ** 8)
+y = 1 - ((1-theoreticalX) ** 13) - 13 * theoreticalX * ((1 - theoreticalX) ** 12)
 
-theoreticalPlot = plt.plot(theoreticalX, y, linestyle='dashed', color="black", label="Theoretical")
+theoreticalPlot = plt.plot(theoreticalX, y, linestyle='dashed', color="black", label="Theoretical model")
 
 z = np.polyfit(probabilityList, [i / (CYCLES) for i in errorList], 3)
 f = np.poly1d(z)
@@ -310,6 +380,16 @@ plt.yscale("log")
 dataPlot = plt.plot(probabilityList, [i / (CYCLES) for i in errorList], 'x', color="blue") 
 dataCurvePlot = plt.plot(x, y, color="blue", label="Simulation")
 
+#plt.title(f"Surface Depolarising Probability vs. QBER @{CYCLES} cycles")
+plt.xlabel(r"Depolarising probability (p)", fontsize=16)
+plt.ylabel(r"QBER", fontsize=16)
+plt.legend(loc="lower right", fontsize=14)
+
+# Limit y-axis
+plt.ylim(10**-4, 10^0)
+
 plt.plot()
+
+plt.autoscale()
 
 plt.show()
