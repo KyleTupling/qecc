@@ -3,8 +3,18 @@ import numpy as np
 import copy
 import time
 import matplotlib.pyplot as plt
+import csv
 
-CYCLES = 200
+import matplotlib 
+
+font = {'family' : 'serif',
+         'size'   : 12,
+         'serif':  'cmr10'
+         }
+
+matplotlib.rc('font', **font)
+
+CYCLES = 1000
 
 # Define Pauli matrices
 X = np.array([[0, 1], [1, 0]])
@@ -65,11 +75,9 @@ class SteaneState(object):
     @staticmethod
     def StateBlockDifference(_state1, _state2):
         differenceCount = 0
-        #for i, block in enumerate(_state1.blockLayoutMat):
-        for i in range(7):
-            if _state1.blockLayoutMat[0][i] != _state2.blockLayoutMat[0][i]: differenceCount += 1
-            #for j, value in enumerate(block):
-                #if value != _state2.blockLayoutMat[i][j]: differenceCount += 1
+        for i, block in enumerate(_state1.blockLayoutMat):
+            for j, value in enumerate(block):
+                if value != _state2.blockLayoutMat[i][j]: differenceCount += 1
 
         for i, value in enumerate(_state1.blockSignsMat):
             if value != _state2.blockSignsMat[i]: differenceCount += 1
@@ -127,10 +135,6 @@ class SteaneState(object):
         Z1Z2Z3Z6_eigenvalue = computeEigenvalue(Z1 @ Z2 @ Z3 @ Z6, self.statevector)
         Z2Z3Z4Z7_eigenvalue = computeEigenvalue(Z2 @ Z3 @ Z4 @ Z7, self.statevector)
 
-        # print(f"Z1Z3Z4Z5 eigenvalue: {Z1Z3Z4Z5_eigenvalue}")
-        # print(f"Z1Z2Z3Z6 eigenvalue: {Z1Z2Z3Z6_eigenvalue}")
-        # print(f"Z2Z3Z4Z7 eigenvalue: {Z2Z3Z4Z7_eigenvalue}")
-
         detectedBitFlipped = None
         if Z1Z3Z4Z5_eigenvalue == -1 and Z1Z2Z3Z6_eigenvalue == -1 and Z2Z3Z4Z7_eigenvalue == 1:
             detectedBitFlipped = 0
@@ -148,17 +152,12 @@ class SteaneState(object):
             detectedBitFlipped = 6
 
         if detectedBitFlipped != None:
-            #print(f"Detected bit flip at position {detectedBitFlipped + 1}")
             for i in range(len(self.blockLayoutMat)):
                 self.blockLayoutMat[i][detectedBitFlipped] ^= 1
 
         X1X3X4X5_eigenvalue = computeEigenvalue(X1 @ X3 @ X4 @ X5, self.statevector)
         X1X2X3X6_eigenvalue = computeEigenvalue(X1 @ X2 @ X3 @ X6, self.statevector)
         X2X3X4X7_eigenvalue = computeEigenvalue(X2 @ X3 @ X4 @ X7, self.statevector)
-
-        # print(f"X1X3X4X5 eigenvalue: {X1X3X4X5_eigenvalue}")
-        # print(f"X1X2X3X6 eigenvalue: {X1X2X3X6_eigenvalue}")
-        # print(f"X2X3X4X7 eigenvalue: {X2X3X4X7_eigenvalue}")
 
         detectedPhaseFlipped = None
         if X1X3X4X5_eigenvalue == -1 and X1X2X3X6_eigenvalue == -1 and X2X3X4X7_eigenvalue == 1:
@@ -232,7 +231,7 @@ blockSignsMat = [
 ]
 
 initTime = time.time()
-probabilityList = np.arange(0.01, 0.25, 0.01)
+probabilityList = np.arange(0.005, 0.25, 0.005)
 errorList = []
 for i in range(len(probabilityList)):
     totalErrors = 0
@@ -242,8 +241,7 @@ for i in range(len(probabilityList)):
         errorState = state.errorChannel(probabilityList[i])
         errorState.errorCorrection()                   
         if not np.all(state.statevector == errorState.statevector):
-            #totalErrors += ShorState.StateBlockDifference(state, errorState)
-            totalErrors += SteaneState.StateBlockDifference(state, errorState)
+            totalErrors += SteaneState.StateBlockDifference(state, errorState) / 7
     errorList.append(totalErrors)
     print(f"Error probability: {probabilityList[i]}")
     print(f"Total errors after {CYCLES} cycles: {totalErrors}")
@@ -252,25 +250,38 @@ for i in range(len(probabilityList)):
 
 print(f"Time taken: {round(time.time() - initTime, 2)}s")
 
+with open('data/steane_code.csv', 'w') as dataFile:
+    writer = csv.writer(dataFile, delimiter=",")
+    writer.writerow([error / CYCLES for error in errorList])
+
 theoreticalModel = []
 for i, prob in enumerate(probabilityList):
     theoreticalModel.append(1 - ((1-prob) ** 7) - 7 * prob * ((1 - prob) ** 6))
 
-x = np.linspace(probabilityList[0], probabilityList[-1], 50)
+x = np.linspace(probabilityList[0], probabilityList[-1], 100)
+theoreticalX = np.linspace(0, probabilityList[-1], 100)
 
 z = np.polyfit(probabilityList, np.log(theoreticalModel), 3)
 f = np.poly1d(z)
 y = f(x)
+y = 1 - ((1-theoreticalX) ** 7) - 7 * theoreticalX * ((1 - theoreticalX) ** 6)
  
-plt.yscale("log")
- 
-theoreticalPlot = plt.plot(probabilityList, theoreticalModel, 'x',x, y, linestyle='dashed', color="black")
+theoreticalPlot = plt.plot(theoreticalX, y, linestyle='dashed', color="black", label="Theoretical model")
 
 z = np.polyfit(probabilityList, [i / ( CYCLES) for i in errorList], 3)
 f = np.poly1d(z)
 y = f(x)
 
-dataPlot = plt.plot(probabilityList, [i / (CYCLES) for i in errorList], 'o', x, y, color="blue")
+plt.yscale("log")
 
-plt.ylim(10**-3, 1)
+dataPlot = plt.plot(probabilityList, [i / (CYCLES) for i in errorList], 'x', color="blue") 
+dataCurvePlot = plt.plot(x, y, color="blue", label="Simulation")
+
+plt.ylim(10**-4, 10**0)
+
+# plt.title(f"Steane Code Depolarising Probability vs. QBER @{CYCLES} cycles")
+plt.xlabel(r"Depolarising probability (p)", fontsize=16)
+plt.ylabel(r"QBER", fontsize=16)
+plt.legend(loc="lower right", fontsize=14)
+
 plt.show()
